@@ -17,7 +17,6 @@ using namespace tensorflow;
 namespace benchmark {
 PredictContext *Model::Borrow() {
   std::unique_lock<std::mutex> lock(mutex_);
-  // std::unique_lock<std::mutex> lock(mutex_);
   while (PredictContexts.empty()) {
     cond_.wait(lock); // 等待条件变量通知
   }
@@ -110,21 +109,35 @@ bool Model::Loadonnx(const std::string& onnx_path) {
     auto profile = builder->createOptimizationProfile();
     auto input_tensor=network->getInput(1);
     auto input_dims = input_tensor->getDimensions();
-    input_dims.d[0] = 1;
-    profile->setDimensions(input_tensor->getName(), nvinfer1::OptProfileSelector::kMIN, input_dims);
-    profile->setDimensions(input_tensor->getName(), nvinfer1::OptProfileSelector::kOPT, input_dims);
     input_dims.d[0] = maxBatchSize;
+    profile->setDimensions(input_tensor->getName(), nvinfer1::OptProfileSelector::kMIN, input_dims);
+    input_dims.d[0] = maxBatchSize;
+    profile->setDimensions(input_tensor->getName(), nvinfer1::OptProfileSelector::kOPT, input_dims);
     profile->setDimensions(input_tensor->getName(), nvinfer1::OptProfileSelector::kMAX, input_dims);
 
+    input_tensor=network->getInput(0);
+    input_dims = input_tensor->getDimensions();
+    input_dims.d[0] = 1;
+    profile->setDimensions(input_tensor->getName(), nvinfer1::OptProfileSelector::kMIN, input_dims);
+    input_dims.d[0] = 1;
+    profile->setDimensions(input_tensor->getName(), nvinfer1::OptProfileSelector::kOPT, input_dims);
+    profile->setDimensions(input_tensor->getName(), nvinfer1::OptProfileSelector::kMAX, input_dims);
+    LOG(INFO)<<maxBatchSize;
     config->addOptimizationProfile(profile);
-
+    LOG(INFO)<<"config";
 #ifdef USE_FP16
     config->setFlag(nvinfer1::BuilderFlag::kFP16);
 #endif
 #ifdef USE_INT8
     config->setFlag(nvinfer1::BuilderFlag::kINT8);
+    std::shared_ptr<Int8EntropyCalibrator> calib(new Int8EntropyCalibrator(ncomm_input_data,comm_input_data,inferred_batchsizes_,maxBatchSize));
+    LOG(INFO)<<"setInt8Calibrator";
+    config->setInt8Calibrator(calib.get());
+
 #endif
+    LOG(INFO)<<"buildEngineWithConfig";
     auto engine = builder->buildEngineWithConfig(*network, *config);
+    LOG(INFO)<<"engine";
     assert(engine);
     auto trtModelStream = engine->serialize(); //序列化 保存trt
     std::ofstream out(trt_name_.c_str(), std::ios::binary);
@@ -155,19 +168,16 @@ bool Model::loadTrt()
     }
     fin.close();
     auto m_CudaEngine = runtime->deserializeCudaEngine(cached_engine.data(), cached_engine.size(), nullptr);
-    
-
     auto dims_i = m_CudaEngine->getBindingDimensions(0);
     LOG(INFO) << "input dims " << dims_i.d[0] << " " << dims_i.d[1];
     dims_i = m_CudaEngine->getBindingDimensions(1);
     LOG(INFO) << "input dims " << dims_i.d[0] << " " << dims_i.d[1];
     dims_i = m_CudaEngine->getBindingDimensions(2);
     LOG(INFO) << "output dims " << dims_i.d[0] << " " << dims_i.d[1];
-    for(int i=0;i<predictor_num_;i++){
-      auto m_CudaContext = m_CudaEngine->createExecutionContext();
-      PredictContexts.push_back(new PredictContext(m_CudaContext));
-
-    }
+    // for(int i=0;i<predictor_num_;i++){
+    auto m_CudaContext = m_CudaEngine->createExecutionContext();
+    PredictContexts.push_back(new PredictContext(m_CudaContext,maxBatchSize));
+    // }
     runtime->destroy();
 }
 bool Model::Warmup() {
@@ -197,40 +207,35 @@ bool Model::Warmup() {
   for(auto e:PredictContexts){
       auto m_CudaContext=e->m_CudaContext;
       auto m_CudaStream=e->m_CudaStream;
+      auto m_ArrayDevMemory=e->m_ArrayDevMemory;
       long long sumtime=0;
       for(int j=0;j<10;j++){
         auto bef = std::chrono::high_resolution_clock::now();
         int target_num=0;
-        float error=0.0;
+        int error_num=0;
+        float terror=0.0;
         for(int i=0;i<ncomm_input_data.size();i++){
-          void *m_ArrayDevMemory[3]{0};
-          cudaMalloc(&m_ArrayDevMemory[1], inferred_batchsizes_[i] * 384 * sizeof(float));
-          cudaMemcpyAsync(m_ArrayDevMemory[1], ncomm_input_data[i].data(), inferred_batchsizes_[i]* 384 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
-          cudaMalloc(&m_ArrayDevMemory[0], 176 * sizeof(float));
           cudaMemcpyAsync(m_ArrayDevMemory[0], comm_input_data[i].data(), 176 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
-          cudaMalloc(&m_ArrayDevMemory[2], inferred_batchsizes_[i]*2 * sizeof(float));
-          nvinfer1::Dims dims5; 
-          dims5.d[0] = inferred_batchsizes_[i];    // replace dynamic batch size with 1
-          dims5.d[1] = 384;
-          dims5.nbDims = 2;
-          m_CudaContext->setBindingDimensions(1,dims5);
-          m_CudaContext->executeV2(m_ArrayDevMemory);
+          cudaMemcpyAsync(m_ArrayDevMemory[1], ncomm_input_data[i].data(), inferred_batchsizes_[i]* 384 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
+          // m_CudaContext->executeV2(m_ArrayDevMemory);
+          m_CudaContext->enqueueV2(m_ArrayDevMemory, m_CudaStream, nullptr);
           void* result=malloc(inferred_batchsizes_[i]*2 * sizeof(float));
           cudaMemcpyAsync(result, m_ArrayDevMemory[2], inferred_batchsizes_[i]*2 * sizeof(float), cudaMemcpyDeviceToHost, m_CudaStream);
           cudaStreamSynchronize(m_CudaStream);
-          for (auto &p : m_ArrayDevMemory)
-          {
-              cudaFree(p);
-              p = nullptr;
-          }
           float* result_t=(float*)result;
           std::vector<float> row=tensorflowResult[i];
           for(int k=0;k<row.size();k++){
-            error+=(abs(row[k]-(*(result_t+k)))/abs(row[k]));
+            float error=(abs(row[k]-(*(result_t+k)))/abs(row[k]));
+            terror+=error;
+            if(error>0.01){
+              error_num++;
+            }
             target_num++;
           }
+          free(result);
         }
-        LOG(INFO)<<"推理结果误差："<<error/target_num*100<<"%";
+        LOG(INFO)<<"推理结果占比误差："<<error_num/target_num*100<<"%";
+        LOG(INFO)<<"推理结果相对误差："<<terror/target_num*100<<"%";
         auto aft = std::chrono::high_resolution_clock::now();
         auto dur = std::chrono::duration_cast<std::chrono::microseconds>(aft - bef).count();
         sumtime+=dur;
@@ -255,10 +260,13 @@ Model* ModelReloader::CreateObject() {
     delete model;
     return nullptr;
   }
-  if(!model->loadTrt()){
-    LOG(ERROR) << "loadTrt: " << bench_model_config_.name();
-    return nullptr;
+  for(int i=0;i<bench_model_config_.predictor_num();i++){
+    if(!model->loadTrt()){
+      LOG(ERROR) << "loadTrt: " << bench_model_config_.name();
+      return nullptr;
+    }
   }
+  
   
   // Warmup
   if (!model->Warmup()) {

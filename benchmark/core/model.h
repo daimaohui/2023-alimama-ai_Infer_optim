@@ -18,9 +18,18 @@ using namespace tensorflow;
 namespace benchmark {
 class PredictContext {
 public:
-    PredictContext(nvinfer1::IExecutionContext* m_CudaContext_1) {
-       m_CudaContext=m_CudaContext_1;
+    PredictContext(nvinfer1::IExecutionContext* m_CudaContext_,int maxBatchSize_) {
+       m_CudaContext=m_CudaContext_;
        m_CudaStream=createCudaStream();
+       maxBatchSize=maxBatchSize_;
+       cudaMalloc(&m_ArrayDevMemory[0],  176 * sizeof(float));
+       cudaMalloc(&m_ArrayDevMemory[1], maxBatchSize_ * 384 * sizeof(float));
+       cudaMalloc(&m_ArrayDevMemory[2], maxBatchSize_ * 2 * sizeof(float));
+    }
+    ~PredictContext(){
+      for(auto &p:m_ArrayDevMemory){
+        cudaFree(p);
+      }
     }
     cudaStream_t createCudaStream() {
         cudaStream_t stream;
@@ -32,9 +41,92 @@ public:
         return stream;
     }
     nvinfer1::IExecutionContext* m_CudaContext;
+    void *m_ArrayDevMemory[3]{0};
+    int maxBatchSize;
     cudaStream_t m_CudaStream;
 };
 
+class Int8EntropyCalibrator : public nvinfer1::IInt8EntropyCalibrator2
+{
+public:
+    Int8EntropyCalibrator(std::vector<std::vector<float>> ncomm_input_data_,
+    std::vector<std::vector<float>> comm_input_data_,
+    std::vector<int> inferred_batchsizes_,int maxBatchSize_
+    ) {
+      m_CudaStream=createCudaStream();
+      maxBatchSize=maxBatchSize_;
+      cudaMalloc(&m_ArrayDevMemory[0],  176 * sizeof(float));
+      cudaMalloc(&m_ArrayDevMemory[1], maxBatchSize_ * 384 * sizeof(float));
+      cudaMalloc(&m_ArrayDevMemory[2], maxBatchSize_ * 2 * sizeof(float));
+      ncomm_input_data=ncomm_input_data_;
+      comm_input_data=comm_input_data_;
+      inferred_batchsizes=inferred_batchsizes_;
+    }
+    virtual ~Int8EntropyCalibrator(){
+      for(auto &p:m_ArrayDevMemory){
+        free(p);
+      }
+    }
+    cudaStream_t createCudaStream() {
+        cudaStream_t stream;
+        cudaError_t cudaErr = cudaStreamCreate(&stream);
+        if (cudaErr != cudaSuccess) {
+            // 处理 CUDA 流创建失败的情况
+            // ...
+        }
+        return stream;
+    }
+    // 想要按照多少的batch进行标定
+    int getBatchSize() const noexcept {
+        return maxBatchSize;
+    }
+
+    bool next() {
+        if(batchIndex>=inferred_batchsizes.size()){
+          return false;
+        }
+        cudaMemcpyAsync(m_ArrayDevMemory[0], comm_input_data[batchIndex].data(), 176 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
+        cudaMemcpyAsync(m_ArrayDevMemory[1], ncomm_input_data[batchIndex].data(), inferred_batchsizes[batchIndex]* 384 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
+        batchIndex++;
+        return true;
+    }
+
+    bool getBatch(void* bindings[], const char* names[], int nbBindings) noexcept {
+        if (!next()) return false;
+        bindings[0] = m_ArrayDevMemory[0];
+        bindings[1] = m_ArrayDevMemory[1];
+        return true;
+    }
+
+    const std::vector<uint8_t>& getEntropyCalibratorData() {
+        return entropyCalibratorData_;
+    }
+
+    const void* readCalibrationCache(size_t& length) noexcept {
+        if (fromCalibratorData_) {
+            length = this->entropyCalibratorData_.size();
+            return this->entropyCalibratorData_.data();
+        }
+
+        length = 0;
+        return nullptr;
+    }
+
+    virtual void writeCalibrationCache(const void* cache, size_t length) noexcept {
+        entropyCalibratorData_.assign((uint8_t*)cache, (uint8_t*)cache + length);
+    }
+
+private:
+    void *m_ArrayDevMemory[3]{0};
+    int maxBatchSize;
+    cudaStream_t m_CudaStream;
+    std::vector<uint8_t> entropyCalibratorData_;
+    bool fromCalibratorData_ = false;
+    std::vector<std::vector<float>> ncomm_input_data;
+    std::vector<std::vector<float>> comm_input_data;
+    std::vector<int> inferred_batchsizes;
+    int batchIndex=0;
+};
 class Model {
  public:
   Model(const std::string& name, int predictor_num) {

@@ -58,54 +58,19 @@ void PredictRequestConsumer::Start() {
 
 bool PredictRequestConsumer::PredictImpl(
     benchmark::PredictContext* predict_context, int* batchsize,float* comm,float* ncomm) {
-      auto m_CudaContext=predict_context->m_CudaContext;
-      auto m_CudaStream=predict_context->m_CudaStream;
-
-        void *m_ArrayDevMemory[3]{0};
-        cudaMalloc(&m_ArrayDevMemory[1], *batchsize * 384 * sizeof(float));
-        cudaMemcpyAsync(m_ArrayDevMemory[1], ncomm, *batchsize* 384 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
-        cudaMalloc(&m_ArrayDevMemory[0], 176 * sizeof(float));
-        cudaMemcpyAsync(m_ArrayDevMemory[0], comm, 176 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
-        cudaMalloc(&m_ArrayDevMemory[2], *batchsize*2 * sizeof(float));
-        nvinfer1::Dims dims5; 
-        dims5.d[0] = *batchsize;    // replace dynamic batch size with 1
-        dims5.d[1] = 384;
-        dims5.nbDims = 2;
-        m_CudaContext->setBindingDimensions(1,dims5);
-        m_CudaContext->executeV2(m_ArrayDevMemory);
-        // m_CudaContext->enqueue(*batchsize, m_ArrayDevMemory, m_CudaStream, nullptr);
-        void* result=malloc(*batchsize*2 * sizeof(float));
-        cudaMemcpyAsync(result, m_ArrayDevMemory[2], *batchsize*2 * sizeof(float), cudaMemcpyDeviceToHost, m_CudaStream);
-        cudaStreamSynchronize(m_CudaStream);
-        for (auto &p : m_ArrayDevMemory)
-        {
-            cudaFree(p);
-            p = nullptr;
-        }
-//   if (predict_context->parent->run_options().trace_level() > RunOptions::NO_TRACE) {
-//     static std::mutex mu;
-//     std::lock_guard<std::mutex> guard(mu);
-//     auto path = predict_context->parent->name() + ".runmeta";
-//     std::ofstream dump;
-//     dump.open(path, std::ofstream::out | std::ofstream::trunc);
-//     if (!meta.SerializeToOstream(&dump)) {
-//       LOG(ERROR) << model << ", dump trace file failed.";
-//       return false;
-//     }
-//     dump.close();
-//   }
-
-//   std::vector<std::string> output_names = predict_context->parent->output_names();
-//   if (outputs.size() != output_names.size()) {
-//     LOG(ERROR) << model << ", output numbers mismatch.";
-//     return false;
-//   }
-//   for (int i = 0; i < outputs.size(); i++) {
-//     TensorProto proto;
-//     outputs[i].AsProtoField(&proto);
-//     VLOG(1) << model << ", output " << output_names[i] << " (output of session::run): "<< proto.DebugString();
-//   }
-  return true;
+    auto m_CudaContext=predict_context->m_CudaContext;
+    auto m_CudaStream=predict_context->m_CudaStream;
+    auto m_ArrayDevMemory=predict_context->m_ArrayDevMemory;
+    cudaMemcpyAsync(m_ArrayDevMemory[1], ncomm, *batchsize* 384 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
+    cudaMemcpyAsync(m_ArrayDevMemory[0], comm, 176 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
+    // m_CudaContext->executeV2(m_ArrayDevMemory);
+    m_CudaContext->enqueueV2(m_ArrayDevMemory, m_CudaStream, nullptr);
+    void* result=malloc(*batchsize*2 * sizeof(float));
+    cudaMemcpyAsync(result, m_ArrayDevMemory[2], *batchsize*2 * sizeof(float), cudaMemcpyDeviceToHost, m_CudaStream);
+    cudaStreamSynchronize(m_CudaStream);
+    // float* result=(fli)
+    free(result);
+    return true;
 }
 
 }  // namespace benchmark
