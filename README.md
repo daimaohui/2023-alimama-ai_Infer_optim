@@ -118,11 +118,11 @@ FP16的计算误差在16% 以上
 
 查找文档以及使用nsys 分析GPU的使用情况，会发现四个线程中的算子非常稀疏 
 
-![image-20230719201845095](D:\Desktop\alimama\image\0.png)
+![image-20230719201845095](./image/0.png)
 
 之后通过安装cuda10.2的插件，解决这个问题，多线程比单线程快很多 ,如下图所示，在线程进行推理，这个算子是密集的，因此速度提升巨大。
 
-<img src="D:\Desktop\alimama\image\1.png" alt="image-20230719201646496" style="zoom:67%;" />
+<img src="./image/1.png" alt="image-20230719201646496" style="zoom:67%;" />
 
 **FP32 2700 ---> 3500**     
 
