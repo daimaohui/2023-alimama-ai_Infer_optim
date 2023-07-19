@@ -1,6 +1,22 @@
 运行方式
 
 ```
+chmod 777 /root/cuda_10.2.1_linux.run
+./cuda_10.2.1_linux.run
+accpet
+//依次执行三个命令，然后install
+```
+
+```
+chmod 777 /root/cuda_10.2.2_linux.run
+./cuda_10.2.2_linux.run
+accpet
+//依次执行三个命令，然后install
+```
+
+
+
+```
  bash init.sh 
 ```
 
@@ -95,3 +111,75 @@ https://github.com/axxx-xxxa/Yolo-deploy-framework.git
 | INT8                           | 8.1867%      | 0.0%                     | 4000+ |
 | FP16+最优尺度+enqueueV2        | 0.294638%    | 0.0%                     | 5500+ |
 | FP16+最优尺度+enqueueV2+多线程 | 0.294638%    | 0.0%                     | 3500+ |
+
+2023-7-18 计算误差全部有问题，这就很烦的了
+
+FP16的计算误差在16% 以上 
+
+查找文档以及使用nsys 分析GPU的使用情况，会发现四个线程中的算子非常稀疏 
+
+![image-20230719201845095](D:\Desktop\alimama\image\0.png)
+
+之后通过安装cuda10.2的插件，解决这个问题，多线程比单线程快很多 ,如下图所示，在线程进行推理，这个算子是密集的，因此速度提升巨大。
+
+<img src="D:\Desktop\alimama\image\1.png" alt="image-20230719201646496" style="zoom:67%;" />
+
+**FP32 2700 ---> 3500**     
+
+**FP16 5500 ---> 9800 量化误差 16%，全局相对误差0.6%**  
+
+2023-7-19 
+
+今天还是查看为啥FP16的计算误差这么大的 
+
+tensorrt 提供了一个工具 polygraphy 可以逐层用来分析onnx 与 trt 精度问题
+
+首先polygraphy的FP32 推理是完成没有问题的。 
+
+```
+polygraphy run /content/model.onnx \
+
+  --onnxrt --trt \
+
+  --workspace 100000000 \
+
+  --save-engine=model_FP16.plan \
+
+  --atol 1e-2 --rtol 1e-2 \
+
+  --fp16 \
+
+  --verbose \
+
+  --onnx-outputs mark all \
+
+  --trt-outputs mark all \
+
+  --trt-min-shapes 'ncomm:0:[511,384]' \
+
+  --trt-opt-shapes 'ncomm:0:[511,384]' \
+
+  --trt-max-shapes 'ncomm:0:[511,384]' \
+
+  --input-shapes 'ncomm:0:[511,384]'
+```
+
+而使用FP16进行推理的时候，在一个fc1_dqm/MatMul这个矩阵乘法这里 onnx 与 trt 的推理效果不太相同 
+
+![3](./image/3.jpg)
+
+
+
+
+
+![2](./image/2.jpg)
+
+这样就知道第一个出现问题的算子是哪个了， 这个时候百度去这么解决这个问题，看起来这个流程是很完美的，但是结果不尽人意。
+
+1.首先我们找到一个链接，这个博客写的大概意思是，一个算子出现问题，那可以使用FP32把这个算子代替，就形成了一个混合精度的trt模型，那我们就按照这个思路去更改算子的精度，ok,更改完成没啥效果，其实我们今天的主体都是在更改算子的精度，会发现我们把所有可以变成FP32的算子都变成了FP32，误差没有任何变化，速度是FP16的速度，精度也是FP16的精度（到现在没想明白，tensorrt到底是这么优化，他会融合算子，但是手动设置算子的精度，为啥会没效果的）。然后我问了一个大佬，大佬只是说我们的代码可以去改算子精度。
+
+https://blog.csdn.net/TracelessLe/article/details/120656484
+
+其实到这里，我能做的工作，基本都做了，以前只用过FP16以及FP32，
+
+但是FP16精度都是在可以接受的范围，但是这次的误差太大了，Tensorrt 只会去关注于在精度可以接受的前提下，去尽可能去优化速度。
