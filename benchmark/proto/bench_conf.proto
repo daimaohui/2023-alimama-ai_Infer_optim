@@ -23,6 +23,10 @@ message BenchModelConfig {
     optional bool cold_switching = 9 [default = false];
     // simulate model switch: interval in seconds, 0 represents no switch
     optional int32 switch_interval = 10 [default = 0];
+
+    required string baseline_file =11;
+
+    required string result_file =12;
 }
 
 message BenchmarkConfig {

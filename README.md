@@ -31,7 +31,10 @@ bash Build.sh
 ```
 bash run.sh 
 ```
-
+在benchmark_conf里面定义了sample_file,baseline_file与result_file
+sample_file输入数据地址
+baseline_file为正确结果文件地址
+result_file为输出文件地址
 运行代码，在warmup阶段进行量化误差 
 
 请注意，由于onnx ---> trt 时间比较长， 
@@ -39,6 +42,8 @@ bash run.sh
 程序会先判断是否存在model.trt，如果存在的话，那么直接读取model.trt文件，不存在，进行onnx ---> trt 过程 
 
 如果测试了FP16之后，想要测试INT8的效果，那么请将blaze-benchmark目录下的model.trt删除，重新编译运行。
+
+
 
 2023-7-10 
 

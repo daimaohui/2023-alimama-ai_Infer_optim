@@ -143,7 +143,7 @@ class Model {
   bool run();
   const std::string& name() const { return name_; }
   bool ParseSamples(const std::string& sample_file);
-  bool Warmup();
+  bool Warmup(const std::string& baselinefile,const std::string& resultfile);
   void Return(PredictContext* context);
   static bool ifFileExists(const char *FileName)
   {

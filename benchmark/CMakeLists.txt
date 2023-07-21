@@ -12,8 +12,8 @@ MESSAGE(${proto_srcs})
 
 include_directories(/usr/local/cuda-10.2/include)
 link_directories(/usr/local/cuda-10.2/lib64)
-include_directories(/root/blaze-benchmark/TensorRT-7.2.1.6/include)
-link_directories(/root/blaze-benchmark/TensorRT-7.2.1.6/lib)
+include_directories(/root/TensorRT-8.5.1.7/include)
+link_directories(/root/TensorRT-8.5.1.7/lib)
 include_directories(/usr/local/cuda-10.2/targets/x86_64-linux/include/)
 
 

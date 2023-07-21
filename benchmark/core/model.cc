@@ -12,7 +12,7 @@
 #include "tensorflow/core/util/dump_graph.h"
 #include "tensorflow/tools/graph_transforms/transform_utils.h"
 #include "./logging.h"
-#define USE_FP16
+// #define USE_FP16
 using namespace tensorflow;
 namespace benchmark {
 PredictContext *Model::Borrow() {
@@ -96,6 +96,7 @@ bool Model::Loadonnx(const std::string& onnx_path) {
 	Logger gLogger;
 
    auto builder =  nvinfer1::createInferBuilder(gLogger);
+
    auto network = builder->createNetworkV2(1U);
     // 解析模型
     auto parser = nvonnxparser::createParser(*network, gLogger);
@@ -136,6 +137,8 @@ bool Model::Loadonnx(const std::string& onnx_path) {
 
 #endif
     LOG(INFO)<<"buildEngineWithConfig";
+    int numLayers = network->getNbLayers();
+    LOG(INFO)<<numLayers;
     auto engine = builder->buildEngineWithConfig(*network, *config);
     LOG(INFO)<<"engine";
     assert(engine);
@@ -158,7 +161,7 @@ bool Model::loadTrt()
 {
     Logger gLogger;
     nvinfer1::IRuntime *runtime = nvinfer1::createInferRuntime(gLogger);
-    std::ifstream fin(trt_name_);
+    std::ifstream fin(trt_name_.c_str());
     std::string cached_engine = "";
     while (fin.peek() != EOF)
     {
@@ -180,10 +183,10 @@ bool Model::loadTrt()
     // }
     runtime->destroy();
 }
-bool Model::Warmup() {
+bool Model::Warmup(const std::string& baselinefile,const std::string& resultfile) {
   LOG(INFO)<<"开始预热";
   //加载之前的result.txt里面的数据
-  std::ifstream file("result.txt");
+  std::ifstream file(baselinefile);
   std::vector<std::vector<float>> tensorflowResult;
   std::string line;
   while (std::getline(file, line)) {
@@ -198,12 +201,6 @@ bool Model::Warmup() {
     tensorflowResult.push_back(row);
   }
   file.close();
-  // for (const auto& row : tensorflowResult) {
-  //   for (const auto& value : row) {
-  //     std::cout << value << " ";
-  //   }
-  //   std::cout << std::endl;
-  // }
   for(auto e:PredictContexts){
       auto m_CudaContext=e->m_CudaContext;
       auto m_CudaStream=e->m_CudaStream;
@@ -214,27 +211,38 @@ bool Model::Warmup() {
         int target_num=0;
         int error_num=0;
         float terror=0.0;
+        std::vector<std::vector<float>> result_vec;
         for(int i=0;i<ncomm_input_data.size();i++){
           cudaMemcpyAsync(m_ArrayDevMemory[0], comm_input_data[i].data(), 176 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
           cudaMemcpyAsync(m_ArrayDevMemory[1], ncomm_input_data[i].data(), inferred_batchsizes_[i]* 384 * sizeof(float), cudaMemcpyHostToDevice, m_CudaStream);
-          // m_CudaContext->executeV2(m_ArrayDevMemory);
           m_CudaContext->enqueueV2(m_ArrayDevMemory, m_CudaStream, nullptr);
           void* result=malloc(inferred_batchsizes_[i]*2 * sizeof(float));
           cudaMemcpyAsync(result, m_ArrayDevMemory[2], inferred_batchsizes_[i]*2 * sizeof(float), cudaMemcpyDeviceToHost, m_CudaStream);
           cudaStreamSynchronize(m_CudaStream);
           float* result_t=(float*)result;
           std::vector<float> row=tensorflowResult[i];
+          std::vector<float> result_vec_temp;
           for(int k=0;k<row.size();k++){
-            float error=(abs(row[k]-(*(result_t+k)))/abs(row[k]));
+            result_vec_temp.push_back(*(result_t+(k*2+1)));
+            float error=abs(row[k]-(*(result_t+(k*2+1))))/abs(row[k]);
             terror+=error;
             if(error>0.01){
               error_num++;
             }
             target_num++;
           }
+          result_vec.push_back(result_vec_temp);
           free(result);
         }
-        LOG(INFO)<<"推理结果占比误差："<<error_num/target_num*100<<"%";
+        std::ofstream file(resultfile);
+        for (const auto& row : result_vec) {
+          for (const auto& value : row) {
+            file << value << " ";
+          }
+          file << std::endl;
+        }
+        file.close();
+        LOG(INFO)<<"推理结果占比误差："<<error_num*1.0/target_num*100<<"%";
         LOG(INFO)<<"推理结果相对误差："<<terror/target_num*100<<"%";
         auto aft = std::chrono::high_resolution_clock::now();
         auto dur = std::chrono::duration_cast<std::chrono::microseconds>(aft - bef).count();
@@ -247,9 +255,9 @@ bool Model::Warmup() {
   LOG(INFO)<<"预热阶段结束";
   return true;
 }
-
 Model* ModelReloader::CreateObject() {
   Model *model= new Model(bench_model_config_.name(), bench_model_config_.predictor_num());
+  LOG(INFO)<<bench_model_config_.baseline_file();
   if (!model->ParseSamples(bench_model_config_.sample_file())) {
     LOG(ERROR) << "Read sample_file failed: " << bench_model_config_.sample_file() << "," 
                << bench_model_config_.name();
@@ -266,10 +274,8 @@ Model* ModelReloader::CreateObject() {
       return nullptr;
     }
   }
-  
-  
   // Warmup
-  if (!model->Warmup()) {
+  if (!model->Warmup(bench_model_config_.baseline_file(),bench_model_config_.result_file())) {
     LOG(ERROR) << "Warmup failed: " << bench_model_config_.name();
     delete model;
     return nullptr;
