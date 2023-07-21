@@ -32,9 +32,13 @@ bash Build.sh
 bash run.sh 
 ```
 在benchmark_conf里面定义了sample_file,baseline_file与result_file
+
 sample_file输入数据地址
+
 baseline_file为正确结果文件地址
+
 result_file为输出文件地址
+
 运行代码，在warmup阶段进行量化误差 
 
 请注意，由于onnx ---> trt 时间比较长， 
